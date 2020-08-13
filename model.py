@@ -20,6 +20,7 @@ from modules.transformation import TPS_SpatialTransformerNetwork
 from modules.feature_extraction import VGG_FeatureExtractor, RCNN_FeatureExtractor, ResNet_FeatureExtractor
 from modules.sequence_modeling import BidirectionalLSTM
 from modules.prediction import Attention
+from modules.gcn import GraphConvolution
 
 
 class Model(nn.Module):
@@ -38,6 +39,8 @@ class Model(nn.Module):
             print('No Transformation module specified')
 
         """ FeatureExtraction """
+        map_backbon_to_len_sequence = {'VGG' : 24, 'RCNN' : 26, 'ResNet' : 26}
+        self.len_sequence = map_backbon_to_len_sequence[opt.FeatureExtraction]
         if opt.FeatureExtraction == 'VGG':
             self.FeatureExtraction = VGG_FeatureExtractor(opt.input_channel, opt.output_channel)
         elif opt.FeatureExtraction == 'RCNN':
@@ -47,6 +50,7 @@ class Model(nn.Module):
         else:
             raise Exception('No FeatureExtraction module specified')
         self.FeatureExtraction_output = opt.output_channel  # int(imgH/16-1) * 512
+        self.GraphConvolution_output = opt.output_channel_GCN
         self.AdaptiveAvgPool = nn.AdaptiveAvgPool2d((None, 1))  # Transform final (imgH/16-1) -> 1
 
         """ Sequence modeling"""
@@ -54,6 +58,12 @@ class Model(nn.Module):
             self.SequenceModeling = nn.Sequential(
                 BidirectionalLSTM(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size),
                 BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
+            self.SequenceModeling_output = opt.hidden_size
+        elif opt.SequenceModeling == 'GCN-BiLSTM':
+            self.SequenceModeling = nn.Sequential(
+            GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = True, scale_factor = 0)
+            BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size),
+            # BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
             self.SequenceModeling_output = opt.hidden_size
         else:
             print('No SequenceModeling module specified')
@@ -80,7 +90,9 @@ class Model(nn.Module):
         """ Sequence modeling stage """
         if self.stages['Seq'] == 'BiLSTM':
             contextual_feature = self.SequenceModeling(visual_feature)
-        else:
+        elif self.stages['Seq'] == 'GCN-BiLSTM':
+            contextual_feature = self.SequenceModeling(visual_feature)
+        else :
             contextual_feature = visual_feature  # for convenience. this is NOT contextually modeled by BiLSTM
 
         """ Prediction stage """
