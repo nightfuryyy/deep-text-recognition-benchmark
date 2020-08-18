@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from torch.nn as nn
+import torch.nn as nn
 
 
 class GraphConvolution(nn.modules.module.Module):
@@ -10,33 +10,70 @@ class GraphConvolution(nn.modules.module.Module):
     Simple GCN layer, similar to https://arxiv.org/abs/1609.02907
     """
 
-    def __init__(self, batch_size, len_sequence, in_features, out_features, bias=False, scale_factor = 0):
+    def __init__(self, batch_size, len_sequence, in_features, out_features, bias=False, scale_factor = 0, dropout = 0.1, isnormalize = True):
         super(GraphConvolution, self).__init__()
         self.batch_size = batch_size
-        self.in_features = in_features # TxK
-        self.out_features = out_features #TxK
-        self.Linear = nn.Linear(in_features, in_features)
+        self.in_features = in_features 
+        self.out_features = out_features
+        self.LinearInput = nn.Linear(in_features, in_features)
         self.CosineSimilarity = nn.CosineSimilarity(dim=-2, eps=1e-8)
         self.len_sequence = len_sequence
-        self.distance_matrix = self.get_distance_matrix(batch_size, len_sequence, scale_factor)
-        self.weight = Parameter(torch.FloatTensor(in_features, out_features))
-        if bias:
-            self.bias = Parameter(torch.FloatTensor(out_features))
-        else:
-            self.register_parameter('bias', None)
-        self.reset_parameters()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.isnormalize = isnormalize
+        self.distance_matrix = self.get_distance_matrix( len_sequence, scale_factor).to(self.device)
+        self.eye_matrix = torch.eye(len_sequence)
+        # self.weight = torch.nn.parameter.Parameter(torch.FloatTensor(in_features, out_features)).to(device)
+        self.OutputLayers = nn.Sequential(
+            nn.Linear(in_features, out_features, bias = bias),
+            nn.BatchNorm1d(len_sequence),
+            torch.nn.LeakyReLU(inplace=True),
+            nn.Dropout(p=dropout)
+        )
+        # self.OutputLayers.apply(self.reset_parameters())
+        # if bias:
+        #     self.bias = torch.nn.parameter.Parameter(torch.FloatTensor(out_features)).to(device)
+        # else:
+        #     self.register_parameter('bias', None)
+        
 
-    def get_distance_matrix(self, batch_size, len_sequence, scale_factor):
+    def get_distance_matrix(self, len_sequence, scale_factor):
         tmp = torch.arange(float(len_sequence)).repeat(len_sequence, 1)
-        return (1 / (1 + torch.exp(torch.abs(tmp-torch.transpose(tmp, 0, 1))-scale_factor))).unsqueeze(0).repeat(batch_size,1,1)
+        return (1 / (1 + torch.exp(torch.abs(tmp-torch.transpose(tmp, 0, 1))-scale_factor))).unsqueeze(0)
 
-    def reset_parameters(self):
-        stdv = 1. / math.sqrt(self.weight.size(1))
-        self.weight.data.uniform_(-stdv, stdv)
-        if self.bias is not None:
-            self.bias.data.uniform_(-stdv, stdv)
+    # def reset_parameters(self):
+    #     stdv = 1. / math.sqrt(self.weight.size(1))
+    #     self.weight.data.uniform_(-stdv, stdv)
+    #     if self.bias is not None:
+    #         self.bias.data.uniform_(-stdv, stdv)
 
-    def cosine_pairwise(x):
+    # def normalize_pygcn(adjacency_maxtrix):
+    #     """ normalize adjacency matrix with normalization-trick. This variant
+    #     is proposed in https://github.com/tkipf/pygcn .
+    #     Refer https://github.com/tkipf/pygcn/issues/11 for the author's comment.
+    #     Arguments:
+    #         a (scipy.sparse.coo_matrix): Unnormalied adjacency matrix
+    #     Returns:
+    #         scipy.sparse.coo_matrix: Normalized adjacency matrix
+    #     """
+    #     # no need to add identity matrix because self connection has already been added
+    #     # a += sp.eye(a.shape[0])
+    #     rowsum = np.array(adjacency_maxtrix.sum(1))
+    #     rowsum_inv = np.power(rowsum, -1).flatten()
+    #     rowsum_inv[np.isinf(rowsum_inv)] = 0.
+    #     # ~D in the GCN paper
+    #     d_tilde = sp.diags(rowsum_inv)
+    #     return d_tilde.dot(a)
+    def normalize_pygcn(adjacency_maxtrix, net):
+        adjacency_maxtrix = adjacency_maxtrix + torch.eye(adjacency_maxtrix.shape[1])
+        rowsum = torch.sum(adjacency_maxtrix,2)
+        rowsum_inv = torch.pow(rowsum, -1)
+        rowsum_inv[torch.isinf(rowsum_inv)] = 0.
+        d_tilde = torch.diag_embed(rowsum_inv, 0)
+        return  torch.einsum('bij,bjk,bkl->bil',d_tilde,adjacency_maxtrix,net)
+        
+        
+
+    def cosine_pairwise(self,x):
         x = x.permute((1, 2, 0))
         cos_sim_pairwise = self.CosineSimilarity(x, x.unsqueeze(1))
         cos_sim_pairwise = cos_sim_pairwise.permute((2, 0, 1))
@@ -44,15 +81,16 @@ class GraphConvolution(nn.modules.module.Module):
 
 
     def forward(self, input):
-        c = self.Linear(input)
+        net = input
+        c = self.LinearInput(net)
         similarity_maxtrix = self.cosine_pairwise(c)
-        adjacency_maxtrix = self.distance_matrix * similarity_maxtrix
-        support = torch.mm(input, self.weight)
-        output = torch.spmm(adjacency_maxtrix, support)
-        if self.bias is not None:
-            return output + self.bias
-        else:
-            return output
+        adjacency_maxtrix = similarity_maxtrix * self.distance_matrix 
+        if self.isnormalize :
+            net = self.normalize_pygcn(adjacency_maxtrix)
+        else :
+            net = torch.einsum('ijk,ikl->ijl',adjacency_maxtrix, net)
+        net = self.OutputLayers(net)
+        return net
 
     def __repr__(self):
         return self.__class__.__name__ + ' (' \

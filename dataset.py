@@ -56,13 +56,18 @@ class Batch_Balanced_Dataset(object):
             selected_d_log = f'num total samples of {selected_d}: {total_number_dataset} x {opt.total_data_usage_ratio} (total_data_usage_ratio) = {len(_dataset)}\n'
             selected_d_log += f'num samples of {selected_d} per batch: {opt.batch_size} x {float(batch_ratio_d)} (batch_ratio) = {_batch_size}'
             print(selected_d_log)
+            # print(len(_dataset))
+            # dropped_samples = len(_dataset) - _batch_size * int(len(_dataset) // _batch_size)
+            # _dataset = Subset(_dataset, range(dropped_samples, len(_dataset)))
+            # print("aaaaaaaaaaa")
+            # print(len(_dataset))
             log.write(selected_d_log + '\n')
             batch_size_list.append(str(_batch_size))
             Total_batch_size += _batch_size
-
             _data_loader = torch.utils.data.DataLoader(
                 _dataset, batch_size=_batch_size,
                 shuffle=True,
+                drop_last=True,
                 num_workers=int(opt.workers),
                 collate_fn=_AlignCollate, pin_memory=True)
             self.data_loader_list.append(_data_loader)
@@ -297,6 +302,7 @@ class AlignCollate(object):
     def __call__(self, batch):
         batch = filter(lambda x: x is not None, batch)
         images, labels = zip(*batch)
+        # print(len(images))
 
         if self.keep_ratio_with_pad:  # same concept with 'Rosetta' paper
             resized_max_w = self.imgW

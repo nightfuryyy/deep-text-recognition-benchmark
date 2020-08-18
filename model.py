@@ -59,15 +59,16 @@ class Model(nn.Module):
                 BidirectionalLSTM(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size),
                 BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
             self.SequenceModeling_output = opt.hidden_size
-        elif opt.SequenceModeling == 'GCN-BiLSTM':
-            self.SequenceModeling = nn.Sequential(
-            GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = True, scale_factor = 0)
-            BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size),
-            # BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
-            self.SequenceModeling_output = opt.hidden_size
-        else:
-            print('No SequenceModeling module specified')
-            self.SequenceModeling_output = self.FeatureExtraction_output
+        else :
+            if opt.SequenceModeling == 'GCN-BiLSTM':
+                self.SequenceModeling = nn.Sequential(
+                GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = True, scale_factor = 0),
+                BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size),
+                BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
+                self.SequenceModeling_output = opt.hidden_size
+            else:
+                print('No SequenceModeling module specified')
+                self.SequenceModeling_output = self.FeatureExtraction_output
 
         """ Prediction """
         if opt.Prediction == 'CTC':
