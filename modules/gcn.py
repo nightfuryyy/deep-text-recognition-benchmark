@@ -29,7 +29,7 @@ class GraphConvolution(nn.modules.module.Module):
             torch.nn.LeakyReLU(inplace=True),
             nn.Dropout(p=dropout)
         )
-        # self.OutputLayers.apply(self.reset_parameters())
+        self.OutputLayers.apply(self.reset_parameters())
         # if bias:
         #     self.bias = torch.nn.parameter.Parameter(torch.FloatTensor(out_features)).to(device)
         # else:
@@ -40,11 +40,10 @@ class GraphConvolution(nn.modules.module.Module):
         tmp = torch.arange(float(len_sequence)).repeat(len_sequence, 1)
         return (1 / (1 + torch.exp(torch.abs(tmp-torch.transpose(tmp, 0, 1))-scale_factor))).unsqueeze(0)
 
-    # def reset_parameters(self):
-    #     stdv = 1. / math.sqrt(self.weight.size(1))
-    #     self.weight.data.uniform_(-stdv, stdv)
-    #     if self.bias is not None:
-    #         self.bias.data.uniform_(-stdv, stdv)
+    def reset_parameters(self, m):
+            if type(m) == nn.Linear:
+                nn.init.kaiming_uniform_(w.weight, a=math.sqrt(5))
+                m.bias.data.fill_(0.0)
 
     # def normalize_pygcn(adjacency_maxtrix):
     #     """ normalize adjacency matrix with normalization-trick. This variant
