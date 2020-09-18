@@ -13,7 +13,7 @@ from nltk.metrics.distance import edit_distance
 
 from utils import CTCLabelConverter, AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate
-from model import Model
+from model_guide import Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -77,15 +77,16 @@ def benchmark_all_eval(model, criterion, converter, opt, calculate_infer_time=Fa
 
     return None
 
-def get_res(labels, preds_str, preds_max_prob, opt, length_of_data):
+def get_res(labels, preds_str, preds_max_prob, opt, length_of_data, isattn = False):
     n_correct = 0
     confidence_score_list = []
+    norm_ED = 0
     for gt, pred, pred_max_prob in zip(labels, preds_str, preds_max_prob):
-        # if 'Attn' in opt.Prediction:
-        #     gt = gt[:gt.find('[s]')]
-        #     pred_EOS = pred.find('[s]')
-        #     pred = pred[:pred_EOS]  # prune after "end of sentence" token ([s])
-        #     pred_max_prob = pred_max_prob[:pred_EOS]
+        if isattn:
+            # gt = gt[:gt.find('[s]')]
+            pred_EOS = pred.find('[s]')
+            pred = pred[:pred_EOS]  # prune after "end of sentence" token ([s])
+            pred_max_prob = pred_max_prob[:pred_EOS]
 
         # To evaluate 'case sensitive model' with alphanumeric and case insensitve setting.
         if opt.sensitive and opt.data_filtering_off:
@@ -98,7 +99,10 @@ def get_res(labels, preds_str, preds_max_prob, opt, length_of_data):
 
         if pred == gt:
             n_correct += 1
-
+        else :
+            print(isattn)
+            print(pred)
+            print(gt)
         '''
         (old version) ICDAR2017 DOST Normalized Edit Distance https://rrc.cvc.uab.es/?ch=7&com=tasks
         "For each word we calculate the normalized edit distance to the length of the ground truth transcription."
@@ -122,13 +126,15 @@ def get_res(labels, preds_str, preds_max_prob, opt, length_of_data):
         except:
             confidence_score = 0  # for empty pred case, when prune after "end of sentence" token ([s])
         confidence_score_list.append(confidence_score)
+    # print(n_correct)
     return n_correct, confidence_score_list, norm_ED
     # print(pred, gt, pred==gt, confidence_score)
 
 
 def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn,  opt):
     """ validation or evaluation """
-    n_correct = 0
+    n_correct_all = 0
+    n_correct_all_attn = 0
     norm_ED = 0
     length_of_data = 0
     infer_time = 0
@@ -161,9 +167,9 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
         preds_size = torch.IntTensor([preds_ctc.size(1)] * batch_size)
         # permute 'preds' to use CTCloss format
         if opt.baiduCTC:
-            cost_ctc = criterion(preds_ctc.permute(1, 0, 2), text_for_loss, preds_size, length_for_loss) / batch_size
+            cost_ctc = criterion_ctc(preds_ctc.permute(1, 0, 2), text_for_loss_ctc, preds_size, length_for_loss_ctc) / batch_size
         else:
-            cost_ctc = criterion(preds_ctc.log_softmax(2).permute(1, 0, 2), text_for_loss, preds_size, length_for_loss)
+            cost_ctc = criterion_ctc(preds_ctc.log_softmax(2).permute(1, 0, 2), text_for_loss_ctc, preds_size, length_for_loss_ctc)
 
         # Select max probabilty (greedy decoding) then decode index to character
         if opt.baiduCTC:
@@ -190,18 +196,23 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
         valid_loss_avg_ctc.add(cost_ctc)
         valid_loss_avg_attn.add(cost_attn)
         # calculate accuracy & confidence score
-        preds_prob = F.softmax(preds, dim=2)
+        preds_prob = F.softmax(preds_ctc, dim=2)
         preds_max_prob, _ = preds_prob.max(dim=2)
         preds_prob_attn = F.softmax(preds_attn, dim=2)
         preds_max_prob_attn, _ = preds_prob_attn.max(dim=2)
         # confidence_score_list = []
 
-    n_correct, confidence_score_list, norm_ED = get_res(labels, preds_str, preds_max_prob, opt, length_of_data):
-    n_correct_attn, confidence_score_list_attn, norm_ED_attn = get_res(labels, preds_str_attn, preds_max_prob_attn, opt, length_of_data):
-    accuracy = n_correct / float(length_of_data) * 100
+        n_correct, confidence_score_list, norm_ED = get_res(labels, preds_str, preds_max_prob, opt, length_of_data)
+        n_correct_attn, confidence_score_list_attn, norm_ED_attn = get_res(labels, preds_str_attn, preds_max_prob_attn, opt, length_of_data, isattn = True)
+        n_correct_all += n_correct
+        n_correct_all_attn += n_correct_attn
+    accuracy = n_correct_all / float(length_of_data) * 100
     norm_ED = norm_ED / float(length_of_data)  # ICDAR2019 Normalized Edit Distance
-    accuracy_attn = n_correct_attn / float(length_of_data) * 100
+    accuracy_attn = n_correct_all_attn / float(length_of_data) * 100
     norm_ED_attn = norm_ED_attn / float(length_of_data) 
+    print(n_correct)
+    print(n_correct_attn)
+    print(length_of_data)
 
     return valid_loss_avg_ctc.val(), accuracy, norm_ED, preds_str, confidence_score_list, labels, infer_time, length_of_data, valid_loss_avg_attn.val(), accuracy_attn, norm_ED_attn, preds_str_attn, confidence_score_list_attn
 
@@ -328,9 +339,9 @@ def test(opt):
     if opt.rgb:
         opt.input_channel = 3
     model = Model(opt)
-    print('model input parameters', opt.imgH, opt.imgW, opt.num_fiducial, opt.input_channel, opt.output_channel,
-          opt.hidden_size, opt.num_class, opt.batch_max_length, opt.Transformation, opt.FeatureExtraction,
-          opt.SequenceModeling, opt.Prediction)
+    # print('model input parameters', opt.imgH, opt.imgW, opt.num_fiducial, opt.input_channel, opt.output_channel,
+    #       opt.hidden_size, opt.num_class, opt.batch_max_length, opt.Transformation, opt.FeatureExtraction,
+    #       opt.SequenceModeling, opt.Prediction)
     model = torch.nn.DataParallel(model).to(device)
 
     # load model
@@ -376,7 +387,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval_data', required=True, help='path to evaluation dataset')
     parser.add_argument('--benchmark_all_eval', action='store_true', help='evaluate 10 benchmark evaluation datasets')
-    parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
+    parser.add_argument('--workers', type=int, help='number of data loading workers', default=12)
     parser.add_argument('--batch_size', type=int, default=192, help='input batch size')
     parser.add_argument('--saved_model', required=True, help="path to saved_model to evaluation")
     """ Data processing """
@@ -398,8 +409,10 @@ if __name__ == '__main__':
     parser.add_argument('--input_channel', type=int, default=1, help='the number of input channel of Feature extractor')
     parser.add_argument('--output_channel', type=int, default=512,
                         help='the number of output channel of Feature extractor')
+    parser.add_argument('--output_channel_GCN', type=int, default=512,
+                        help='the number of output channel of GCN')
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
-
+    parser.add_argument('--guide_training', action='store_true', help='Whether to use guide_training (default not)')
     opt = parser.parse_args()
 
     """ vocab / character number configuration """
