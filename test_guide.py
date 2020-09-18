@@ -318,11 +318,12 @@ def validation(model, criterion, evaluation_loader, converter, opt):
 
 def test(opt):
     """ model configuration """
-    if 'CTC' in opt.Prediction:
-        converter = CTCLabelConverter(opt.character)
-    else:
-        converter = AttnLabelConverter(opt.character)
-    opt.num_class = len(converter.character)
+    # if 'CTC' in opt.Prediction:
+    converter_ctc = CTCLabelConverter(opt.character)
+# else:
+    converter_attn = AttnLabelConverter(opt.character)
+    opt.num_class_ctc = len(converter_ctc.character)
+    opt.num_class_attn = len(converter_attn.character)
 
     if opt.rgb:
         opt.input_channel = 3
@@ -343,10 +344,10 @@ def test(opt):
     os.system(f'cp {opt.saved_model} ./result/{opt.exp_name}/')
 
     """ setup loss """
-    if 'CTC' in opt.Prediction:
-        criterion = torch.nn.CTCLoss(zero_infinity=True).to(device)
-    else:
-        criterion = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)  # ignore [GO] token = ignore index 0
+    # if 'CTC' in opt.Prediction:
+    criterion_ctc = torch.nn.CTCLoss(zero_infinity=True).to(device)
+# else:
+    criterion_attn = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)  # ignore [GO] token = ignore index 0
 
     """ evaluation """
     model.eval()
@@ -362,10 +363,11 @@ def test(opt):
                 shuffle=False,
                 num_workers=int(opt.workers),
                 collate_fn=AlignCollate_evaluation, pin_memory=True)
-            _, accuracy_by_best_model, _, _, _, _, _, _ = validation(
-                model, criterion, evaluation_loader, converter, opt)
+            _, accuracy_by_best_model, _, _, _, _, _, _, _, acc_attn, _, _, _ = validation_ctc_and_attn(
+                model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn, opt)
             log.write(eval_data_log)
             print(f'{accuracy_by_best_model:0.3f}')
+            print(f'{acc_attn:0.3f}')
             log.write(f'{accuracy_by_best_model:0.3f}\n')
             log.close()
 
