@@ -77,13 +77,63 @@ def benchmark_all_eval(model, criterion, converter, opt, calculate_infer_time=Fa
 
     return None
 
+def get_res(labels, preds_str, preds_max_prob, opt, length_of_data):
+    n_correct = 0
+    confidence_score_list = []
+    for gt, pred, pred_max_prob in zip(labels, preds_str, preds_max_prob):
+        # if 'Attn' in opt.Prediction:
+        #     gt = gt[:gt.find('[s]')]
+        #     pred_EOS = pred.find('[s]')
+        #     pred = pred[:pred_EOS]  # prune after "end of sentence" token ([s])
+        #     pred_max_prob = pred_max_prob[:pred_EOS]
+
+        # To evaluate 'case sensitive model' with alphanumeric and case insensitve setting.
+        if opt.sensitive and opt.data_filtering_off:
+            pred = pred.lower()
+            gt = gt.lower()
+            alphanumeric_case_insensitve = '0123456789abcdefghijklmnopqrstuvwxyz'
+            out_of_alphanumeric_case_insensitve = f'[^{alphanumeric_case_insensitve}]'
+            pred = re.sub(out_of_alphanumeric_case_insensitve, '', pred)
+            gt = re.sub(out_of_alphanumeric_case_insensitve, '', gt)
+
+        if pred == gt:
+            n_correct += 1
+
+        '''
+        (old version) ICDAR2017 DOST Normalized Edit Distance https://rrc.cvc.uab.es/?ch=7&com=tasks
+        "For each word we calculate the normalized edit distance to the length of the ground truth transcription."
+        if len(gt) == 0:
+            norm_ED += 1
+        else:
+            norm_ED += edit_distance(pred, gt) / len(gt)
+        '''
+
+        # ICDAR2019 Normalized Edit Distance
+        if len(gt) == 0 or len(pred) == 0:
+            norm_ED += 0
+        elif len(gt) > len(pred):
+            norm_ED += 1 - edit_distance(pred, gt) / len(gt)
+        else:
+            norm_ED += 1 - edit_distance(pred, gt) / len(pred)
+
+        # calculate confidence score (= multiply of pred_max_prob)
+        try:
+            confidence_score = pred_max_prob.cumprod(dim=0)[-1]
+        except:
+            confidence_score = 0  # for empty pred case, when prune after "end of sentence" token ([s])
+        confidence_score_list.append(confidence_score)
+    return n_correct, confidence_score_list, norm_ED
+    # print(pred, gt, pred==gt, confidence_score)
+
+
 def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn,  opt):
     """ validation or evaluation """
     n_correct = 0
     norm_ED = 0
     length_of_data = 0
     infer_time = 0
-    valid_loss_avg = Averager()
+    valid_loss_avg_ctc = Averager()
+    valid_loss_avg_attn = Averager()
 
     for i, (image_tensors, labels) in enumerate(evaluation_loader):
         batch_size = image_tensors.size(0)
@@ -98,24 +148,30 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
 
         start_time = time.time()
         # if 'CTC' in opt.Prediction:
-        preds = model.module.inference(image, text_for_pred)
+        # preds = model.module.inference(image, text_for_pred)
+        preds_ctc, preds_attn = model(image, text_for_loss_attn, is_train = False)
         forward_time = time.time() - start_time
-
+        preds_attn = preds_attn[:, :text_for_loss_attn.shape[1] - 1, :]
+        target = text_for_loss_attn[:, 1:]
+        cost_attn = criterion_attn(preds_attn.contiguous().view(-1, preds_attn.shape[-1]), target.contiguous().view(-1))
+        _, preds_index_attn = preds_attn.max(2)
+        preds_str_attn = converter_attn.decode(preds_index_attn, length_for_pred)
+        labels_attn = converter_attn.decode(text_for_loss_attn[:, 1:], length_for_loss_attn)
         # Calculate evaluation loss for CTC deocder.
-        preds_size = torch.IntTensor([preds.size(1)] * batch_size)
+        preds_size = torch.IntTensor([preds_ctc.size(1)] * batch_size)
         # permute 'preds' to use CTCloss format
         if opt.baiduCTC:
-            cost = criterion(preds.permute(1, 0, 2), text_for_loss, preds_size, length_for_loss) / batch_size
+            cost_ctc = criterion(preds_ctc.permute(1, 0, 2), text_for_loss, preds_size, length_for_loss) / batch_size
         else:
-            cost = criterion(preds.log_softmax(2).permute(1, 0, 2), text_for_loss, preds_size, length_for_loss)
+            cost_ctc = criterion(preds_ctc.log_softmax(2).permute(1, 0, 2), text_for_loss, preds_size, length_for_loss)
 
         # Select max probabilty (greedy decoding) then decode index to character
         if opt.baiduCTC:
-            _, preds_index = preds.max(2)
+            _, preds_index = preds_ctc.max(2)
             preds_index = preds_index.view(-1)
         else:
-            _, preds_index = preds.max(2)
-        preds_str = converter.decode(preds_index.data, preds_size.data)
+            _, preds_index = preds_ctc.max(2)
+        preds_str = converter_ctc.decode(preds_index.data, preds_size.data)
     
         # else:
         #     preds = model(image, text_for_pred, is_train=False)
@@ -131,60 +187,24 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
         #     labels = converter.decode(text_for_loss[:, 1:], length_for_loss)
 
         infer_time += forward_time
-        valid_loss_avg.add(cost)
-
+        valid_loss_avg_ctc.add(cost_ctc)
+        valid_loss_avg_attn.add(cost_attn)
         # calculate accuracy & confidence score
         preds_prob = F.softmax(preds, dim=2)
         preds_max_prob, _ = preds_prob.max(dim=2)
-        confidence_score_list = []
-        for gt, pred, pred_max_prob in zip(labels, preds_str, preds_max_prob):
-            # if 'Attn' in opt.Prediction:
-            #     gt = gt[:gt.find('[s]')]
-            #     pred_EOS = pred.find('[s]')
-            #     pred = pred[:pred_EOS]  # prune after "end of sentence" token ([s])
-            #     pred_max_prob = pred_max_prob[:pred_EOS]
+        preds_prob_attn = F.softmax(preds_attn, dim=2)
+        preds_max_prob_attn, _ = preds_prob_attn.max(dim=2)
+        # confidence_score_list = []
 
-            # To evaluate 'case sensitive model' with alphanumeric and case insensitve setting.
-            if opt.sensitive and opt.data_filtering_off:
-                pred = pred.lower()
-                gt = gt.lower()
-                alphanumeric_case_insensitve = '0123456789abcdefghijklmnopqrstuvwxyz'
-                out_of_alphanumeric_case_insensitve = f'[^{alphanumeric_case_insensitve}]'
-                pred = re.sub(out_of_alphanumeric_case_insensitve, '', pred)
-                gt = re.sub(out_of_alphanumeric_case_insensitve, '', gt)
-
-            if pred == gt:
-                n_correct += 1
-
-            '''
-            (old version) ICDAR2017 DOST Normalized Edit Distance https://rrc.cvc.uab.es/?ch=7&com=tasks
-            "For each word we calculate the normalized edit distance to the length of the ground truth transcription."
-            if len(gt) == 0:
-                norm_ED += 1
-            else:
-                norm_ED += edit_distance(pred, gt) / len(gt)
-            '''
-
-            # ICDAR2019 Normalized Edit Distance
-            if len(gt) == 0 or len(pred) == 0:
-                norm_ED += 0
-            elif len(gt) > len(pred):
-                norm_ED += 1 - edit_distance(pred, gt) / len(gt)
-            else:
-                norm_ED += 1 - edit_distance(pred, gt) / len(pred)
-
-            # calculate confidence score (= multiply of pred_max_prob)
-            try:
-                confidence_score = pred_max_prob.cumprod(dim=0)[-1]
-            except:
-                confidence_score = 0  # for empty pred case, when prune after "end of sentence" token ([s])
-            confidence_score_list.append(confidence_score)
-            # print(pred, gt, pred==gt, confidence_score)
-
+    n_correct, confidence_score_list, norm_ED = get_res(labels, preds_str, preds_max_prob, opt, length_of_data):
+    n_correct_attn, confidence_score_list_attn, norm_ED_attn = get_res(labels, preds_str_attn, preds_max_prob_attn, opt, length_of_data):
     accuracy = n_correct / float(length_of_data) * 100
     norm_ED = norm_ED / float(length_of_data)  # ICDAR2019 Normalized Edit Distance
+    accuracy_attn = n_correct_attn / float(length_of_data) * 100
+    norm_ED_attn = norm_ED_attn / float(length_of_data) 
 
-    return valid_loss_avg.val(), accuracy, norm_ED, preds_str, confidence_score_list, labels, infer_time, length_of_data
+    return valid_loss_avg_ctc.val(), accuracy, norm_ED, preds_str, confidence_score_list, labels, infer_time, length_of_data, valid_loss_avg_attn.val(), accuracy_attn, norm_ED_attn, preds_str_attn, confidence_score_list_attn
+
 
 
 def validation(model, criterion, evaluation_loader, converter, opt):
