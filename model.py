@@ -62,9 +62,10 @@ class Model(nn.Module):
         else :
             if opt.SequenceModeling == 'GCN-BiLSTM':
                 self.SequenceModeling = nn.Sequential(
-                GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = True, scale_factor = 0),
+                GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = False, scale_factor = 5),
                 BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size),
-                BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
+                BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size)
+                )
                 self.SequenceModeling_output = opt.hidden_size
             else:
                 print('No SequenceModeling module specified')

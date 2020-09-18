@@ -10,7 +10,7 @@ class GraphConvolution(nn.modules.module.Module):
     Simple GCN layer, similar to https://arxiv.org/abs/1609.02907
     """
 
-    def __init__(self, batch_size, len_sequence, in_features, out_features, bias=False, scale_factor = 0, dropout = 0.1, isnormalize = True):
+    def __init__(self, batch_size, len_sequence, in_features, out_features, bias=False, scale_factor = 0., dropout = 0.0, isnormalize = False):
         super(GraphConvolution, self).__init__()
         self.batch_size = batch_size
         self.in_features = in_features 
@@ -29,7 +29,12 @@ class GraphConvolution(nn.modules.module.Module):
             torch.nn.LeakyReLU(inplace=True),
             nn.Dropout(p=dropout)
         )
-        self.OutputLayers.apply(self.reset_parameters())
+
+        def reset_parameters(m):
+            if type(m) == nn.Linear:
+                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                # m.bias.data.fill_(0.0)
+        self.OutputLayers.apply(reset_parameters)
         # if bias:
         #     self.bias = torch.nn.parameter.Parameter(torch.FloatTensor(out_features)).to(device)
         # else:
@@ -40,10 +45,6 @@ class GraphConvolution(nn.modules.module.Module):
         tmp = torch.arange(float(len_sequence)).repeat(len_sequence, 1)
         return (1 / (1 + torch.exp(torch.abs(tmp-torch.transpose(tmp, 0, 1))-scale_factor))).unsqueeze(0)
 
-    def reset_parameters(self, m):
-            if type(m) == nn.Linear:
-                nn.init.kaiming_uniform_(w.weight, a=math.sqrt(5))
-                m.bias.data.fill_(0.0)
 
     # def normalize_pygcn(adjacency_maxtrix):
     #     """ normalize adjacency matrix with normalization-trick. This variant
@@ -62,8 +63,8 @@ class GraphConvolution(nn.modules.module.Module):
     #     # ~D in the GCN paper
     #     d_tilde = sp.diags(rowsum_inv)
     #     return d_tilde.dot(a)
-    def normalize_pygcn(adjacency_maxtrix, net):
-        adjacency_maxtrix = adjacency_maxtrix + torch.eye(adjacency_maxtrix.shape[1])
+    def normalize_pygcn(self, adjacency_maxtrix, net):
+        adjacency_maxtrix = adjacency_maxtrix + torch.eye(self.len_sequence).to(self.device)
         rowsum = torch.sum(adjacency_maxtrix,2)
         rowsum_inv = torch.pow(rowsum, -1)
         rowsum_inv[torch.isinf(rowsum_inv)] = 0.
@@ -85,7 +86,7 @@ class GraphConvolution(nn.modules.module.Module):
         similarity_maxtrix = self.cosine_pairwise(c)
         adjacency_maxtrix = similarity_maxtrix * self.distance_matrix 
         if self.isnormalize :
-            net = self.normalize_pygcn(adjacency_maxtrix)
+            net = self.normalize_pygcn(adjacency_maxtrix, net)
         else :
             net = torch.einsum('ijk,ikl->ijl',adjacency_maxtrix, net)
         net = self.OutputLayers(net)
@@ -95,3 +96,7 @@ class GraphConvolution(nn.modules.module.Module):
         return self.__class__.__name__ + ' (' \
                + str(self.in_features) + ' -> ' \
                + str(self.out_features) + ')'
+
+
+
+
