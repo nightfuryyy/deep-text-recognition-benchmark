@@ -1,3 +1,4 @@
+
 import math
 
 import torch
@@ -93,9 +94,9 @@ class GraphConvolution(nn.modules.module.Module):
         return net
 
     def __repr__(self):
-        return self.__class__.__name__ + ' (' \
-               + str(self.in_features) + ' -> ' \
-               + str(self.out_features) + ')'
+        return self.__class__.__name__ + ' ('                + str(self.in_features) + ' -> '                + str(self.out_features) + ')'
+
+
 
 
 

@@ -1,3 +1,4 @@
+
 import os
 import sys
 import time
@@ -42,7 +43,7 @@ def train(opt):
         collate_fn=AlignCollate_valid, pin_memory=True)
     log.write(valid_dataset_log)
     print('-' * 80)
-    log.write('-' * 80 + '\n')
+    log.write('-' * 80 + '	')
     log.close()
     
     """ model configuration """
@@ -132,11 +133,11 @@ def train(opt):
     """ final options """
     # print(opt)
     with open(f'./saved_models/{opt.exp_name}/opt.txt', 'a') as opt_file:
-        opt_log = '------------ Options -------------\n'
+        opt_log = '------------ Options -------------	'
         args = vars(opt)
         for k, v in args.items():
-            opt_log += f'{str(k)}: {str(v)}\n'
-        opt_log += '---------------------------------------\n'
+            opt_log += f'{str(k)}: {str(v)}	'
+        opt_log += '---------------------------------------	'
         print(opt_log)
         opt_file.write(opt_log)
 
@@ -161,8 +162,8 @@ def train(opt):
         # print(image.size())
         text_attn, length_attn = Attn_converter.encode(labels, batch_max_length=opt.batch_max_length)
         text_ctc, length_ctc = CTC_converter.encode(labels, batch_max_length=opt.batch_max_length)        
-        if iteration == start_iter :
-            writer.add_graph(model, (image, text_attn))
+        #if iteration == start_iter :
+        #    writer.add_graph(model, (image, text_attn))
         batch_size = image.size(0)
         preds_major, preds_guide = model(image, text_attn[:, :-1])
         preds_size = torch.IntTensor([preds_major.size(1)] * batch_size)
@@ -224,23 +225,23 @@ def train(opt):
                     torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_norm_ED.pth')
                 best_model_log = f'{"Best_accuracy":17s}: {best_accuracy:0.3f}, {"Best_norm_ED":17s}: {best_norm_ED:0.2f}'
 
-                loss_model_log = f'{loss_log}\n{current_model_log}\n{best_model_log}'
+                loss_model_log = f'{loss_log}	{current_model_log}	{best_model_log}'
                 print(loss_model_log)
-                log.write(loss_model_log + '\n')
+                log.write(loss_model_log + '	')
 
                 # show some predicted results
                 dashed_line = '-' * 80
                 head = f'{"Ground Truth":25s} | {"Prediction":25s} | Confidence Score & T/F'
-                predicted_result_log = f'{dashed_line}\n{head}\n{dashed_line}\n'
+                predicted_result_log = f'{dashed_line}	{head}	{dashed_line}	'
                 for gt, pred, confidence in zip(labels[:5], preds[:5], confidence_score[:5]):
                     # if 'Attn' in opt.Prediction:
                     #     gt = gt[:gt.find('[s]')]
                     #     pred = pred[:pred.find('[s]')]
 
-                    predicted_result_log += f'{gt:25s} | {pred:25s} | {confidence:0.4f}\t{str(pred == gt)}\n'
+                    predicted_result_log += f'{gt:25s} | {pred:25s} | {confidence:0.4f}	{str(pred == gt)}	'
                 predicted_result_log += f'{dashed_line}'
                 print(predicted_result_log)
-                log.write(predicted_result_log + '\n')
+                log.write(predicted_result_log + '	')
 
         # save model per 1e+5 iter.
         if (iteration + 1) % 1e+5 == 0:
