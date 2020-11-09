@@ -377,6 +377,14 @@ def test(opt):
     model.eval()
     with torch.no_grad():
         if opt.benchmark_all_eval:  # evaluation with 10 benchmark evaluation datasets
+            log = open(f'./result/{opt.exp_name}/log_evaluation.txt', 'a')
+            AlignCollate_evaluation = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
+            eval_data, eval_data_log = hierarchical_dataset(root=opt.eval_data, opt=opt)
+            evaluation_loader = torch.utils.data.DataLoader(
+                eval_data, batch_size=opt.batch_size,
+                shuffle=False,
+                num_workers=int(opt.workers),
+                collate_fn=AlignCollate_evaluation, pin_memory=True)
             benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn, opt)
         else:
             log = open(f'./result/{opt.exp_name}/log_evaluation.txt', 'a')
