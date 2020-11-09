@@ -112,10 +112,10 @@ def get_res(labels, preds_str, preds_max_prob, opt, length_of_data, isattn = Fal
 
         if pred == gt:
             n_correct += 1
-        else :
-            print(isattn)
-            print(pred)
-            print(gt)
+        # else :
+        #     print(isattn)
+        #     print(pred)
+        #     print(gt)
         '''
         (old version) ICDAR2017 DOST Normalized Edit Distance https://rrc.cvc.uab.es/?ch=7&com=tasks
         "For each word we calculate the normalized edit distance to the length of the ground truth transcription."
