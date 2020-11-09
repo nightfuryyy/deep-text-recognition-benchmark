@@ -36,6 +36,7 @@ def benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, 
     list_accuracy_attn = []
     total_forward_time = 0
     total_evaluation_data_number = 0
+    total_correct_number_attn = 0
     total_correct_number = 0
     log = open(f'./result/{opt.exp_name}/log_all_evaluation.txt', 'a')
     dashed_line = '-' * 80
