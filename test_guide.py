@@ -17,7 +17,7 @@ from model_guide import Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def benchmark_all_eval(model, criterion, converter, opt, calculate_infer_time=False):
+def benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn, opt, calculate_infer_time=False):
     """ evaluation with 10 benchmark evaluation datasets """
     # The evaluation datasets, dataset order is same with Table 1 in our paper.
     eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_860', 'IC03_867', 'IC13_857',
@@ -33,13 +33,13 @@ def benchmark_all_eval(model, criterion, converter, opt, calculate_infer_time=Fa
         evaluation_batch_size = opt.batch_size
 
     list_accuracy = []
+    list_accuracy_attn = []
     total_forward_time = 0
     total_evaluation_data_number = 0
     total_correct_number = 0
     log = open(f'./result/{opt.exp_name}/log_all_evaluation.txt', 'a')
     dashed_line = '-' * 80
     print(dashed_line)
-    log.write(dashed_line + '\n')
     for eval_data in eval_data_list:
         eval_data_path = os.path.join(opt.eval_data, eval_data)
         AlignCollate_evaluation = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
@@ -50,29 +50,42 @@ def benchmark_all_eval(model, criterion, converter, opt, calculate_infer_time=Fa
             num_workers=int(opt.workers),
             collate_fn=AlignCollate_evaluation, pin_memory=True)
 
-        _, accuracy_by_best_model, norm_ED_by_best_model, _, _, _, infer_time, length_of_data = validation(
-            model, criterion, evaluation_loader, converter, opt)
-        list_accuracy.append(f'{accuracy_by_best_model:0.3f}')
+        _, accuracy_by_best_model_gtc, norm_ED_by_best_model_gtc, _, _, _, infer_time_gtc, length_of_data, _, acc_attn, norm_ED_by_best_model_attn, _, _ = validation_ctc_and_attn(
+            model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn, opt)
+
+        # _, accuracy_by_best_model, norm_ED_by_best_model, _, _, _, infer_time, length_of_data = validation(
+        #     model, criterion, evaluation_loader, converter, opt)
+        list_accuracy.append(f'{accuracy_by_best_model_gtc:0.3f}')
+        list_accuracy_attn.append(f'{accuracy_by_best_model_gtc:0.3f}')
         total_forward_time += infer_time
         total_evaluation_data_number += len(eval_data)
-        total_correct_number += accuracy_by_best_model * length_of_data
+        total_correct_number += accuracy_by_best_model_gtc * length_of_data
+        total_correct_number_attn += acc_attn * length_of_data
         log.write(eval_data_log)
-        print(f'Acc {accuracy_by_best_model:0.3f}\t normalized_ED {norm_ED_by_best_model:0.3f}')
-        log.write(f'Acc {accuracy_by_best_model:0.3f}\t normalized_ED {norm_ED_by_best_model:0.3f}\n')
+        print(f'Acc {accuracy_by_best_model_gtc:0.3f}\t normalized_ED {norm_ED_by_best_model_gtc:0.3f}')
+        print(f'Acc {acc_attn:0.3f}\t normalized_ED {norm_ED_by_best_model_attn:0.3f}')
+        log.write(f'Acc {accuracy_by_best_model_gtc:0.3f}\t normalized_ED {norm_ED_by_best_model_gtc:0.3f}\n')
+        log.write(f'Acc {acc_attn:0.3f}\t normalized_ED {norm_ED_by_best_model_attn:0.3f}\n')
         print(dashed_line)
-        log.write(dashed_line + '\n')
 
     averaged_forward_time = total_forward_time / total_evaluation_data_number * 1000
     total_accuracy = total_correct_number / total_evaluation_data_number
-    params_num = sum([np.prod(p.size()) for p in model.parameters()])
+    total_accuracy_attn = total_correct_number_attn / total_evaluation_data_number
+    # params_num = sum([np.prod(p.size()) for p in model.parameters()])
 
     evaluation_log = 'accuracy: '
     for name, accuracy in zip(eval_data_list, list_accuracy):
         evaluation_log += f'{name}: {accuracy}\t'
     evaluation_log += f'total_accuracy: {total_accuracy:0.3f}\t'
-    evaluation_log += f'averaged_infer_time: {averaged_forward_time:0.3f}\t# parameters: {params_num/1e6:0.3f}'
+    evaluation_log_attn = 'accuracy attention: '
+    for name, accuracy in zip(eval_data_list, list_accuracy_attn):
+        evaluation_log_attn += f'{name}: {accuracy}\t'
+    evaluation_log_attn += f'total_accuracy: {total_accuracy:0.3f}\t'
+    # evaluation_log += f'averaged_infer_time: {averaged_forward_time:0.3f}\t# parameters: {params_num/1e6:0.3f}'
     print(evaluation_log)
-    log.write(evaluation_log + '\n')
+    print(evaluation_log_attn)
+    log.write(evaluation_log)
+    log.write(evaluation_log_attn)
     log.close()
 
     return None
@@ -364,7 +377,7 @@ def test(opt):
     model.eval()
     with torch.no_grad():
         if opt.benchmark_all_eval:  # evaluation with 10 benchmark evaluation datasets
-            benchmark_all_eval(model, criterion, converter, opt)
+            benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn, opt)
         else:
             log = open(f'./result/{opt.exp_name}/log_evaluation.txt', 'a')
             AlignCollate_evaluation = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
