@@ -57,7 +57,7 @@ def benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, 
         #     model, criterion, evaluation_loader, converter, opt)
         list_accuracy.append(f'{accuracy_by_best_model_gtc:0.3f}')
         list_accuracy_attn.append(f'{accuracy_by_best_model_gtc:0.3f}')
-        total_forward_time += infer_time
+        total_forward_time += infer_time_gtc
         total_evaluation_data_number += len(eval_data)
         total_correct_number += accuracy_by_best_model_gtc * length_of_data
         total_correct_number_attn += acc_attn * length_of_data
