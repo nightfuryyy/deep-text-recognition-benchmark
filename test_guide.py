@@ -205,10 +205,10 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
             # Select max probabilty (greedy decoding) then decode index to character
             _, preds_index = preds_prob.max(2)
             preds_index = preds_index.view(-1)
-            preds_str = converter.decode_greedy(preds_index.data, preds_size.data)
+            preds_str = converter_ctc.decode_greedy(preds_index.data, preds_size.data)
         else :
             k = preds_prob.cpu().detach().numpy()
-            preds_str = converter.decode_beamsearch(k, beamWidth=5)
+            preds_str = converter_ctc.decode_beamsearch(k, beamWidth=5)
 
         # else:
         #     preds = model(image, text_for_pred, is_train=False)
