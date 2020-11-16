@@ -193,7 +193,7 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
             # _, preds_index = preds_ctc.max(2)
         # preds_str = converter_ctc.decode(preds_index.data, preds_size.data)
         ######## filter ignore_char, rebalance
-        preds_prob = F.softmax(preds, dim=2)
+        preds_prob = F.softmax(preds_ctc, dim=2)
         preds_prob = preds_prob.cpu().detach().numpy()
         ignore_idx = 0
         preds_prob[:,:,ignore_idx] = 0.
