@@ -8,8 +8,6 @@ import cv2
 from PIL import Image
 import hashlib
 import sys, os
-from zipfile import ZipFile
-from .imgproc import loadImage
 
 if sys.version_info[0] == 2:
     from six.moves.urllib.request import urlretrieve
