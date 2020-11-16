@@ -10,8 +10,8 @@ import torch.utils.data
 import torch.nn.functional as F
 import numpy as np
 from nltk.metrics.distance import edit_distance
-
-from utils import CTCLabelConverter, AttnLabelConverter, Averager
+from utils_beamsearch import CTCLabelConverter
+from utils import AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate
 from model_guide import Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -186,13 +186,30 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
             cost_ctc = criterion_ctc(preds_ctc.log_softmax(2).permute(1, 0, 2), text_for_loss_ctc, preds_size, length_for_loss_ctc)
 
         # Select max probabilty (greedy decoding) then decode index to character
-        if opt.baiduCTC:
-            _, preds_index = preds_ctc.max(2)
+        # if opt.baiduCTC:
+        #     _, preds_index = preds_ctc.max(2)
+        #     preds_index = preds_index.view(-1)
+        # else:
+            # _, preds_index = preds_ctc.max(2)
+        # preds_str = converter_ctc.decode(preds_index.data, preds_size.data)
+        ######## filter ignore_char, rebalance
+        preds_prob = F.softmax(preds, dim=2)
+        preds_prob = preds_prob.cpu().detach().numpy()
+        ignore_idx = 0
+        preds_prob[:,:,ignore_idx] = 0.
+        pred_norm = preds_prob.sum(axis=2)
+        preds_prob = preds_prob/np.expand_dims(pred_norm, axis=-1)
+        preds_prob = torch.from_numpy(preds_prob).float().to("cpu")
+
+        if not opt.beam_search :
+            # Select max probabilty (greedy decoding) then decode index to character
+            _, preds_index = preds_prob.max(2)
             preds_index = preds_index.view(-1)
-        else:
-            _, preds_index = preds_ctc.max(2)
-        preds_str = converter_ctc.decode(preds_index.data, preds_size.data)
-    
+            preds_str = converter.decode_greedy(preds_index.data, preds_size.data)
+        else :
+            k = preds_prob.cpu().detach().numpy()
+            preds_str = converter.decode_beamsearch(k, beamWidth=5)
+
         # else:
         #     preds = model(image, text_for_pred, is_train=False)
         #     forward_time = time.time() - start_time
@@ -435,6 +452,7 @@ if __name__ == '__main__':
                         help='the number of output channel of GCN')
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
     parser.add_argument('--guide_training', action='store_true', help='Whether to use guide_training (default not)')
+    parser.add_argument('--beam_search', action='store_true', help='Whether to use beam_search (default not)')
     opt = parser.parse_args()
 
     """ vocab / character number configuration """
