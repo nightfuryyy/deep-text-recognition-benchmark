@@ -5,7 +5,8 @@ import time
 import random
 import string
 import argparse
-
+from warpctc_pytorch import CTCLoss 
+#from torch_baidu_ctc import CTCLoss
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn.init as init
@@ -13,14 +14,20 @@ import torch.optim as optim
 import torch.utils.data
 import numpy as np
 from torchsummary import summary
+from transformers import get_linear_schedule_with_warmup, AdamW
 from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter('tensorboard')
+fol_ckpt = '/content/drive/MyDrive/thesis/ckpt_all_adamw'
+import os
+if not os.path.exists(fol_ckpt) :
+  os.mkdir(fol_ckpt)
+
+writer = SummaryWriter(fol_ckpt)
 from utils import CTCLabelConverter, CTCLabelConverterForBaiduWarpctc, AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model_guide import Model
 from test_guide import validation
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+from SmoothCTCLoss import SmoothCTCLoss
 
 def train(opt):
     """ dataset preparation """
@@ -83,27 +90,23 @@ def train(opt):
     # data parallel for multi-GPU
     model = torch.nn.DataParallel(model).to(device)
     model.train()
-    if opt.saved_model != '':
-        print(f'loading pretrained model from {opt.saved_model}')
-        if opt.FT:
-            model.load_state_dict(torch.load(opt.saved_model), strict=False)
-        else:
-            model.load_state_dict(torch.load(opt.saved_model))
     print("Model:")
     print(model)
     # print(summary(model, (1, opt.imgH, opt.imgW,1)))
     """ setup loss """
-    # if 'CTC' in opt.Prediction:
-    #     if opt.baiduCTC:
-    #         # need to install warpctc. see our guideline.
-    #         from warpctc_pytorch import CTCLoss 
-    #         criterion = CTCLoss()
-    #     else:
-    #         criterion = torch.nn.CTCLoss(zero_infinity=True).to(device)
+    if opt.baiduCTC:
+        # need to install warpctc. see our guideline.
+        if opt.label_smooth :
+            criterion_major_path = SmoothCTCLoss(num_classes = opt.num_class_ctc, weight = 0.05)
+        else :
+            criterion_major_path = CTCLoss()
+        #criterion_major_path = CTCLoss(average_frames=False, reduction="mean", blank=0)
+    else:
+        criterion_major_path = torch.nn.CTCLoss(zero_infinity=True).to(device)
     # else:
     #     criterion = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)  # ignore [GO] token = ignore index 0
     # loss averager
-    criterion_major_path = torch.nn.CTCLoss(zero_infinity=True).to(device)
+    #criterion_major_path = torch.nn.CTCLoss(zero_infinity=True).to(device)
     criterion_guide_path = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)
     loss_avg_major_path = Averager()
     loss_avg_guide_path = Averager()
@@ -118,18 +121,43 @@ def train(opt):
                 guide_parameters.append(param)
             elif name.split(".")[1] in major_model_part_names :
                 major_parameters.append(param)
-            print(name)
+            # print(name)
     # [print(name, p.numel()) for name, p in filter(lambda p: p[1].requires_grad, model.named_parameters())]
-
+    if opt.continue_training :
+      guide_parameters = []
     # setup optimizer
     if opt.adam:
         optimizer = optim.Adam(filtered_parameters, lr=opt.lr, betas=(opt.beta1, 0.999))
     else:
-        optimizer_ctc = optim.Adadelta(major_parameters, lr=opt.lr, rho=opt.rho, eps=opt.eps)
-        optimizer_attn = optim.Adadelta(guide_parameters, lr=opt.lr, rho=opt.rho, eps=opt.eps)
+        optimizer_ctc = AdamW(major_parameters, lr=opt.lr)
+        if not opt.continue_training :
+          optimizer_attn = AdamW(guide_parameters, lr=opt.lr)
+    scheduler_ctc = get_linear_schedule_with_warmup(optimizer_ctc, num_warmup_steps=10000, num_training_steps=opt.num_iter)
+    scheduler_attn = get_linear_schedule_with_warmup(optimizer_attn, num_warmup_steps=10000, num_training_steps=opt.num_iter) 
+    start_iter = 0
+    if opt.saved_model != '' and (not opt.continue_training):
+        print(f'loading pretrained model from {opt.saved_model}')
+        checkpoint = torch.load(opt.saved_model)
+        start_iter = checkpoint['start_iter']+1
+        if not opt.adam: 
+            optimizer_ctc.load_state_dict(checkpoint['optimizer_ctc_state_dict'])
+            if not opt.continue_training :
+              optimizer_attn.load_state_dict(checkpoint['optimizer_attn_state_dict'])
+            scheduler_ctc.load_state_dict(checkpoint['scheduler_ctc_state_dict'])
+            scheduler_attn.load_state_dict(checkpoint['scheduler_attn_state_dict'])
+            print(scheduler_ctc.get_lr())
+            print(scheduler_attn.get_lr())
+        if opt.FT:
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
+    if opt.continue_training : 
+        model.load_state_dict(torch.load(opt.saved_model))
     # print("Optimizer:")
     # print(optimizer)
-
+    # 
+    scheduler_ctc = get_linear_schedule_with_warmup(optimizer_ctc, num_warmup_steps=10000, num_training_steps=opt.num_iter,last_epoch = start_iter - 1)
+    scheduler_attn = get_linear_schedule_with_warmup(optimizer_attn, num_warmup_steps=10000, num_training_steps=opt.num_iter, last_epoch = start_iter - 1)
     """ final options """
     # print(opt)
     with open(f'./saved_models/{opt.exp_name}/opt.txt', 'a') as opt_file:
@@ -142,57 +170,65 @@ def train(opt):
         opt_file.write(opt_log)
 
     """ start training """
-    start_iter = 0
-    if opt.saved_model != '':
-        try:
-            start_iter = int(opt.saved_model.split('_')[-1].split('.')[0])
-            print(f'continue to train, start_iter: {start_iter}')
-        except:
-            pass
-
+      
     start_time = time.time()
     best_accuracy = -1
     best_norm_ED = -1
-    iteration = start_iter
-
+    iteration = start_iter - 1
+    if opt.continue_training :
+      start_iter = 0
     while(True):
         # train part
         image_tensors, labels = train_dataset.get_batch()
+        iteration += 1
+        if iteration < start_iter :
+            continue
         image = image_tensors.to(device)
         # print(image.size())
         text_attn, length_attn = Attn_converter.encode(labels, batch_max_length=opt.batch_max_length)
-        text_ctc, length_ctc = CTC_converter.encode(labels, batch_max_length=opt.batch_max_length)        
+        #print("1")
+        text_ctc, length_ctc = CTC_converter.encode(labels, batch_max_length=opt.batch_max_length) 
+        #print("2")
         #if iteration == start_iter :
         #    writer.add_graph(model, (image, text_attn))
         batch_size = image.size(0)
         preds_major, preds_guide = model(image, text_attn[:, :-1])
+        #print("10")
         preds_size = torch.IntTensor([preds_major.size(1)] * batch_size)
         if opt.baiduCTC:
             preds_major = preds_major.permute(1, 0, 2)  # to use CTCLoss format
-            cost_ctc = criterion_major_path(preds_major, text_ctc, preds_size, length_attn) / batch_size
+            if opt.label_smooth :
+                cost_ctc = criterion_major_path(preds_major, text_ctc, preds_size, length_ctc, batch_size)
+            else :
+                cost_ctc = criterion_major_path(preds_major, text_ctc, preds_size, length_ctc) / batch_size
         else:
             preds_major = preds_major.log_softmax(2).permute(1, 0, 2)
             cost_ctc = criterion_major_path(preds_major, text_ctc, preds_size, length_ctc)
-
+        #print("3")
         # preds = model(image, text[:, :-1])  # align with Attention.forward
         target = text_attn[:, 1:]  # without [GO] Symbol
-        cost_attn = criterion_guide_path(preds_guide.view(-1, preds_guide.shape[-1]), target.contiguous().view(-1))
-
-        optimizer_attn.zero_grad()
-        cost_attn.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_(guide_parameters, opt.grad_clip)  # gradient clipping with 5 (Default)
-        optimizer_attn.step()
+        if not opt.continue_training : 
+            cost_attn = criterion_guide_path(preds_guide.view(-1, preds_guide.shape[-1]), target.contiguous().view(-1))
+            optimizer_attn.zero_grad()
+            cost_attn.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(guide_parameters, opt.grad_clip)  # gradient clipping with 5 (Default)
+            optimizer_attn.step()
         optimizer_ctc.zero_grad()
         cost_ctc.backward()
         torch.nn.utils.clip_grad_norm_(major_parameters, opt.grad_clip)  # gradient clipping with 5 (Default)
         optimizer_ctc.step()
+        scheduler_ctc.step()
+        scheduler_attn.step()
+        #print("4")
         loss_avg_major_path.add(cost_ctc)
-        loss_avg_guide_path.add(cost_attn)
+        if not opt.continue_training :
+            loss_avg_guide_path.add(cost_attn)
         if (iteration + 1) % 100 == 0 :
             writer.add_scalar("Loss/train_ctc", loss_avg_major_path.val(), (iteration + 1) // 100)
             loss_avg_major_path.reset()
-            writer.add_scalar("Loss/train_attn", loss_avg_guide_path.val(), (iteration + 1) // 100)
-            loss_avg_guide_path.reset()
+            if not opt.continue_training :
+                writer.add_scalar("Loss/train_attn", loss_avg_guide_path.val(), (iteration + 1) // 100)
+                loss_avg_guide_path.reset()
         # validation part
         if (iteration + 1) % opt.valInterval == 0 : #or iteration == 0: # To see training progress, we also conduct validation when 'iteration == 0' 
             elapsed_time = time.time() - start_time
@@ -211,18 +247,22 @@ def train(opt):
 
                 current_model_log = f'{"Current_accuracy":17s}: {current_accuracy:0.3f}, {"Current_norm_ED":17s}: {current_norm_ED:0.2f}'
                 # training loss and validation loss
-                loss_log = f'[{iteration+1}/{opt.num_iter}] Train loss ctc: {loss_avg_major_path.val():0.5f}, Train loss attn: {loss_avg_guide_path.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
+                if not opt.continue_training :
+                    loss_log = f'[{iteration+1}/{opt.num_iter}] Train loss ctc: {loss_avg_major_path.val():0.5f}, Train loss attn: {loss_avg_guide_path.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
+                else :
+                    loss_log = f'[{iteration+1}/{opt.num_iter}] Train loss ctc: {loss_avg_major_path.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
                 loss_avg_major_path.reset()
-                loss_avg_guide_path.reset()
+                if not opt.continue_training :
+                    loss_avg_guide_path.reset()
                 current_model_log = f'{"Current_accuracy":17s}: {current_accuracy:0.3f}, {"Current_norm_ED":17s}: {current_norm_ED:0.2f}'
 
                 # keep best accuracy model (on valid dataset)
                 if current_accuracy > best_accuracy:
                     best_accuracy = current_accuracy
-                    torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_accuracy.pth')
+                    torch.save(model.state_dict(), f'{fol_ckpt}/best_accuracy.pth')
                 if current_norm_ED > best_norm_ED:
                     best_norm_ED = current_norm_ED
-                    torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_norm_ED.pth')
+                    torch.save(model.state_dict(), f'{fol_ckpt}/best_norm_ED.pth')
                 best_model_log = f'{"Best_accuracy":17s}: {best_accuracy:0.3f}, {"Best_norm_ED":17s}: {best_norm_ED:0.2f}'
 
                 loss_model_log = f'{loss_log}	{current_model_log}	{best_model_log}'
@@ -244,14 +284,22 @@ def train(opt):
                 log.write(predicted_result_log + '	')
 
         # save model per 1e+5 iter.
-        if (iteration + 1) % 1e+5 == 0:
-            torch.save(
-                model.state_dict(), f'./saved_models/{opt.exp_name}/iter_{iteration+1}.pth')
+        if (iteration + 1) % 1e+3 == 0 and (not opt.continue_training):
+            # print(scheduler_ctc.get_lr())
+            # print(scheduler_attn.get_lr())
+            torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_attn_state_dict': optimizer_attn.state_dict(),
+            'optimizer_ctc_state_dict': optimizer_ctc.state_dict(),
+            'start_iter' : iteration,
+            'scheduler_ctc_state_dict' : scheduler_ctc.state_dict(),
+            'scheduler_attn_state_dict': scheduler_attn.state_dict(),
+            }
+                , f'{fol_ckpt}/current_model.pth')
 
         if (iteration + 1) == opt.num_iter:
             print('end the training')
             sys.exit()
-        iteration += 1
 
 
 if __name__ == '__main__':
@@ -273,6 +321,7 @@ if __name__ == '__main__':
     parser.add_argument('--eps', type=float, default=1e-8, help='eps for Adadelta. default=1e-8')
     parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping value. default=5')
     parser.add_argument('--baiduCTC', action='store_true', help='for data_filtering_off mode')
+    parser.add_argument('--label_smooth', action='store_true', help='for data_filtering_off mode')
     """ Data processing """
     parser.add_argument('--select_data', type=str, default='MJ-ST',
                         help='select training data (default is MJ-ST, which means MJ and ST used as training data)')
@@ -303,7 +352,9 @@ if __name__ == '__main__':
     parser.add_argument('--output_channel_GCN', type=int, default=512,
                         help='the number of output channel of GCN')
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
-    parser.add_argument('--guide_training', action='store_true', help='Whether to use guide_training (default not)')    
+    parser.add_argument('--guide_training', action='store_true', help='Whether to use guide_training (default not)')  
+    parser.add_argument('--continue_training', action='store_true', help='Whether to continue training from best model')    
+    
     opt = parser.parse_args()
 
     if not opt.exp_name:
@@ -345,3 +396,4 @@ if __name__ == '__main__':
         """
 
     train(opt)
+

@@ -20,6 +20,8 @@ import torch.nn as nn
 from modules.transformation import TPS_SpatialTransformerNetwork
 from modules.feature_extraction import VGG_FeatureExtractor, RCNN_FeatureExtractor, ResNet_FeatureExtractor
 from modules.sequence_modeling import BidirectionalLSTM
+# from modules.sequence_modeling_ver2 import BidirectionalLSTM
+from modules.sequence_modeling_ver7 import WeightDropBiLSTM
 from modules.prediction import Attention
 from modules.gcn import GraphConvolution
 
@@ -63,7 +65,7 @@ class Model(nn.Module):
         # else :
         #     if opt.SequenceModeling == 'GCN-BiLSTM':
         #         self.SequenceModeling = nn.Sequential(
-        #         GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = True, scale_factor = 0),
+        #         GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = False, scale_factor = 2.0,dropout = 0.0),
         #         BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size),
         #         BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
         #         self.SequenceModeling_output = opt.hidden_size
@@ -74,15 +76,19 @@ class Model(nn.Module):
         """ Prediction """
         # if opt.guide_training :
         self.SequenceModeling_CTC =  nn.Sequential(
-            GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = False, scale_factor = 0),
-            BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size),
-            BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size),
+            WeightDropBiLSTM(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size,numclass = opt.num_class_ctc,dropouti = 0.05, wdrop = 0.2, dropouto = 0.05),
+            # GraphConvolution(opt.batch_size, self.len_sequence, self.FeatureExtraction_output, self.GraphConvolution_output, bias = False,scale_factor = 2.0,dropout = 0.0,isnormalize = True),
+            # BidirectionalLSTM(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size,dropouti = 0.1, wdrop = 0.2, dropouto = 0.0),
+            # BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size,is_last_blstm = True, numclass = opt.num_class_ctc,dropouti = 0.1, wdrop = 0.2, dropouto = 0.1),
+            # BidirectionalLSTM(self.GraphConvolution_output, opt.hidden_size, opt.hidden_size,is_last_blstm = True, numclass = opt.num_class_ctc),
+            # nn.Dropout(p=0.2),
+            # BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size),
             )
         self.SequenceModeling_Attn =  nn.Sequential(
             BidirectionalLSTM(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size),
             BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size),
             )
-        self.CTC = nn.Linear(opt.hidden_size, opt.num_class_ctc)
+        # self.CTC = nn.Linear(opt.hidden_size, opt.num_class_ctc)
         self.Attention = Attention(opt.hidden_size, opt.hidden_size, opt.num_class_attn)
 
 
@@ -95,7 +101,8 @@ class Model(nn.Module):
         visual_feature = self.AdaptiveAvgPool(visual_feature.permute(0, 3, 1, 2))  # [b, c, h, w] -> [b, w, c, h]
         visual_feature = visual_feature.squeeze(3)
         contextual_feature_from_major_path = self.SequenceModeling_CTC(visual_feature)
-        prediction_from_major_path = self.CTC(contextual_feature_from_major_path.contiguous())
+        #prediction_from_major_path = self.CTC(contextual_feature_from_major_path.contiguous())
+        prediction_from_major_path = contextual_feature_from_major_path
         return prediction_from_major_path
 
 
@@ -121,7 +128,8 @@ class Model(nn.Module):
 
         # if opt.guide_training :
         contextual_feature_from_major_path = self.SequenceModeling_CTC(visual_feature)
-        prediction_from_major_path = self.CTC(contextual_feature_from_major_path.contiguous())
+        prediction_from_major_path = contextual_feature_from_major_path
+        #prediction_from_major_path = self.CTC(contextual_feature_from_major_path.contiguous())
         contextual_feature_from_guide_path = self.SequenceModeling_Attn(visual_feature)
         prediction_from_guide_path = self.Attention(contextual_feature_from_guide_path.contiguous(), text, is_train, batch_max_length=self.opt.batch_max_length)
         return prediction_from_major_path, prediction_from_guide_path

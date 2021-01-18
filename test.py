@@ -11,21 +11,22 @@ import torch.nn.functional as F
 import numpy as np
 from nltk.metrics.distance import edit_distance
 
-from utils import CTCLabelConverter, AttnLabelConverter, Averager
+from utils import CTCLabelConverter, AttnLabelConverter, Averager,CTCLabelConverterForBaiduWarpctc
 from dataset import hierarchical_dataset, AlignCollate
 from model import Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# device = torch.device('cpu')
 
 
 def benchmark_all_eval(model, criterion, converter, opt, calculate_infer_time=False):
     """ evaluation with 10 benchmark evaluation datasets """
     # The evaluation datasets, dataset order is same with Table 1 in our paper.
-    eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_860', 'IC03_867', 'IC13_857',
-                      'IC13_1015', 'IC15_1811', 'IC15_2077', 'SVTP', 'CUTE80']
+    # eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_860', 'IC03_867', 'IC13_857',
+    #                   'IC13_1015', 'IC15_1811', 'IC15_2077', 'SVTP', 'CUTE80']
 
     # # To easily compute the total accuracy of our paper.
-    # eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_867', 
-    #                   'IC13_1015', 'IC15_2077', 'SVTP', 'CUTE80']
+    eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_867', 
+                      'IC13_1015', 'IC15_2077', 'SVTP', 'CUTE80']
 
     if calculate_infer_time:
         evaluation_batch_size = 1  # batch_size should be 1 to calculate the GPU inference time per image.
@@ -111,11 +112,14 @@ def validation(model, criterion, evaluation_loader, converter, opt):
 
             # Select max probabilty (greedy decoding) then decode index to character
             if opt.baiduCTC:
-                _, preds_index = preds.max(2)
-                preds_index = preds_index.view(-1)
+                if (opt.beam_search):
+                  preds_index = preds
+                else :
+                  _, preds_index = preds.max(2)
+                  preds_index = preds_index.view(-1)
             else:
                 _, preds_index = preds.max(2)
-            preds_str = converter.decode(preds_index.data, preds_size.data)
+            preds_str = converter.decode(preds_index.data, preds_size.data,opt.beam_search)
         
         else:
             preds = model(image, text_for_pred, is_train=False)
@@ -190,7 +194,10 @@ def validation(model, criterion, evaluation_loader, converter, opt):
 def test(opt):
     """ model configuration """
     if 'CTC' in opt.Prediction:
-        converter = CTCLabelConverter(opt.character)
+        if opt.baiduCTC:
+            converter = CTCLabelConverterForBaiduWarpctc(opt.character)
+        else:
+            converter = CTCLabelConverter(opt.character)
     else:
         converter = AttnLabelConverter(opt.character)
     opt.num_class = len(converter.character)
@@ -201,11 +208,14 @@ def test(opt):
     print('model input parameters', opt.imgH, opt.imgW, opt.num_fiducial, opt.input_channel, opt.output_channel,
           opt.hidden_size, opt.num_class, opt.batch_max_length, opt.Transformation, opt.FeatureExtraction,
           opt.SequenceModeling, opt.Prediction)
-    model = torch.nn.DataParallel(model).to(device)
-
+    # model = torch.nn.DataParallel(model,output_device = device).to(device)
+    model = model.to(device)
     # load model
     print('loading pretrained model from %s' % opt.saved_model)
-    model.load_state_dict(torch.load(opt.saved_model, map_location=device))
+    state_dict = torch.load(opt.saved_model, map_location=device)
+    if True :
+      state_dict = {k[7:]: v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     opt.exp_name = '_'.join(opt.saved_model.split('/')[1:])
     # print(model)
 
@@ -223,7 +233,7 @@ def test(opt):
     model.eval()
     with torch.no_grad():
         if opt.benchmark_all_eval:  # evaluation with 10 benchmark evaluation datasets
-            benchmark_all_eval(model, criterion, converter, opt)
+            benchmark_all_eval(model, criterion, converter, opt,calculate_infer_time = True)
         else:
             log = open(f'./result/{opt.exp_name}/log_evaluation.txt', 'a')
             AlignCollate_evaluation = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
@@ -270,7 +280,9 @@ if __name__ == '__main__':
     parser.add_argument('--start_iter', type=int, default=0,
                     help='the number of output channel of Feature extractor')
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
-
+    parser.add_argument('--output_channel_GCN', type=int, default=512,
+                        help='the number of output channel of GCN')
+    parser.add_argument('--beam_search', action='store_true', help='whether to use beam_search')
     opt = parser.parse_args()
 
     """ vocab / character number configuration """

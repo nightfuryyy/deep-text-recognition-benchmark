@@ -1,4 +1,7 @@
 import torch
+from fast_ctc_decode import beam_search, viterbi_search
+from ctcdecode import CTCBeamDecoder
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -8,7 +11,7 @@ class CTCLabelConverter(object):
     def __init__(self, character):
         # character (str): set of the possible characters.
         dict_character = list(character)
-
+        self.alphabet = "_" + ''.join(dict_character)
         self.dict = {}
         for i, char in enumerate(dict_character):
             # NOTE: 0 is reserved for 'CTCblank' token required by CTCLoss
@@ -36,7 +39,9 @@ class CTCLabelConverter(object):
             batch_text[i][:len(text)] = torch.LongTensor(text)
         return (batch_text.to(device), torch.IntTensor(length).to(device))
 
-    def decode(self, text_index, length):
+    def decode(self, text_index, length, is_use_beam_search = False):
+        if is_use_beam_search :
+            return self.decode_beamsearch(self, text_index, length)
         """ convert text-index into text-label. """
         texts = []
         for index, l in enumerate(length):
@@ -50,6 +55,9 @@ class CTCLabelConverter(object):
 
             texts.append(text)
         return texts
+    def decode_beamsearch(self, preds, length) :
+        seq, path = beam_search(preds, self.alphabet, beam_size=5, beam_cut_threshold=0.1)
+
 
 
 class CTCLabelConverterForBaiduWarpctc(object):
@@ -58,6 +66,7 @@ class CTCLabelConverterForBaiduWarpctc(object):
     def __init__(self, character):
         # character (str): set of the possible characters.
         dict_character = list(character)
+        self.alphabet = "_" + ''.join(dict_character)
 
         self.dict = {}
         for i, char in enumerate(dict_character):
@@ -81,8 +90,10 @@ class CTCLabelConverterForBaiduWarpctc(object):
 
         return (torch.IntTensor(text), torch.IntTensor(length))
 
-    def decode(self, text_index, length):
+    def decode(self, text_index, length,is_use_beam_search = False):
         """ convert text-index into text-label. """
+        if is_use_beam_search :
+            return self.decode_beamsearch(text_index)
         texts = []
         index = 0
         for l in length:
@@ -97,7 +108,33 @@ class CTCLabelConverterForBaiduWarpctc(object):
             texts.append(text)
             index += l
         return texts
-
+    def decode_beamsearch(self, preds) :
+        texts = []
+        preds = preds.softmax(2)
+        # preds = torch.Tensor.cpu(preds).detach().numpy()
+        # # print(preds.shape)
+        # for i in range(preds.shape[0]) :
+        #     seq, path = beam_search(preds[i], self.alphabet, beam_size=20, beam_cut_threshold=0.00001)
+        #     texts.append(seq)
+        decoder = CTCBeamDecoder(
+            self.character,
+            model_path=None,
+            alpha=0,
+            beta=0,
+            cutoff_top_n=10,
+            cutoff_prob=1.0,
+            beam_width=4,
+            num_processes=16,
+            blank_id=0,
+            log_probs_input=False
+        )
+        beam_results, beam_scores, timesteps, out_lens = decoder.decode(preds)
+        for i in range(preds.shape[0]) :
+            seq = "".join(self.character[n] for n in beam_results[i][0][:out_lens[i][0]])
+            texts.append(seq)
+        
+        # return decoder(preds)
+        return texts
 
 class AttnLabelConverter(object):
     """ Convert between text-label and text-index """

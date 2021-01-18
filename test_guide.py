@@ -1,3 +1,4 @@
+
 import os
 import time
 import string
@@ -10,8 +11,8 @@ import torch.utils.data
 import torch.nn.functional as F
 import numpy as np
 from nltk.metrics.distance import edit_distance
-from utils_beamsearch import CTCLabelConverter
-from utils import AttnLabelConverter, Averager
+
+from utils import CTCLabelConverter, AttnLabelConverter, Averager,CTCLabelConverterForBaiduWarpctc
 from dataset import hierarchical_dataset, AlignCollate
 from model_guide import Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -20,12 +21,12 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, converter_ctc, converter_attn, opt, calculate_infer_time=False):
     """ evaluation with 10 benchmark evaluation datasets """
     # The evaluation datasets, dataset order is same with Table 1 in our paper.
-    eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_860', 'IC03_867', 'IC13_857',
-                      'IC13_1015', 'IC15_1811', 'IC15_2077', 'SVTP', 'CUTE80']
+    # eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_860', 'IC03_867', 'IC13_857',
+    #                   'IC13_1015', 'IC15_1811', 'IC15_2077', 'SVTP', 'CUTE80']
 
     # # To easily compute the total accuracy of our paper.
-    # eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_867', 
-    #                   'IC13_1015', 'IC15_2077', 'SVTP', 'CUTE80']
+    eval_data_list = ['IIIT5k_3000', 'SVT', 'IC03_867', 
+                      'IC13_1015', 'IC15_2077', 'SVTP', 'CUTE80']
 
     if calculate_infer_time:
         evaluation_batch_size = 1  # batch_size should be 1 to calculate the GPU inference time per image.
@@ -57,16 +58,16 @@ def benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, 
         # _, accuracy_by_best_model, norm_ED_by_best_model, _, _, _, infer_time, length_of_data = validation(
         #     model, criterion, evaluation_loader, converter, opt)
         list_accuracy.append(f'{accuracy_by_best_model_gtc:0.3f}')
-        list_accuracy_attn.append(f'{accuracy_by_best_model_gtc:0.3f}')
+        list_accuracy_attn.append(f'{acc_attn:0.3f}')
         total_forward_time += infer_time_gtc
         total_evaluation_data_number += len(eval_data)
         total_correct_number += accuracy_by_best_model_gtc * length_of_data
         total_correct_number_attn += acc_attn * length_of_data
         log.write(eval_data_log)
-        print(f'Acc {accuracy_by_best_model_gtc:0.3f}\t normalized_ED {norm_ED_by_best_model_gtc:0.3f}')
-        print(f'Acc {acc_attn:0.3f}\t normalized_ED {norm_ED_by_best_model_attn:0.3f}')
-        log.write(f'Acc {accuracy_by_best_model_gtc:0.3f}\t normalized_ED {norm_ED_by_best_model_gtc:0.3f}\n')
-        log.write(f'Acc {acc_attn:0.3f}\t normalized_ED {norm_ED_by_best_model_attn:0.3f}\n')
+        print(f'Acc {accuracy_by_best_model_gtc:0.3f}	 normalized_ED {norm_ED_by_best_model_gtc:0.3f}')
+        print(f'Acc {acc_attn:0.3f}	 normalized_ED {norm_ED_by_best_model_attn:0.3f}')
+        log.write(f'Acc {accuracy_by_best_model_gtc:0.3f}	 normalized_ED {norm_ED_by_best_model_gtc:0.3f}	')
+        log.write(f'Acc {acc_attn:0.3f}	 normalized_ED {norm_ED_by_best_model_attn:0.3f}	')
         print(dashed_line)
 
     averaged_forward_time = total_forward_time / total_evaluation_data_number * 1000
@@ -76,15 +77,16 @@ def benchmark_all_eval(model, criterion_ctc, criterion_attn, evaluation_loader, 
 
     evaluation_log = 'accuracy: '
     for name, accuracy in zip(eval_data_list, list_accuracy):
-        evaluation_log += f'{name}: {accuracy}\t'
-    evaluation_log += f'total_accuracy: {total_accuracy:0.3f}\t'
+        evaluation_log += f'{name}: {accuracy}	'
+    evaluation_log += f'total_accuracy: {total_accuracy:0.3f}	'
     evaluation_log_attn = 'accuracy attention: '
     for name, accuracy in zip(eval_data_list, list_accuracy_attn):
-        evaluation_log_attn += f'{name}: {accuracy}\t'
-    evaluation_log_attn += f'total_accuracy: {total_accuracy_attn:0.3f}\t'
-    # evaluation_log += f'averaged_infer_time: {averaged_forward_time:0.3f}\t# parameters: {params_num/1e6:0.3f}'
+        evaluation_log_attn += f'{name}: {accuracy}	'
+    evaluation_log_attn += f'total_accuracy: {total_accuracy_attn:0.3f}	'
+    # evaluation_log += f'averaged_infer_time: {averaged_forward_time:0.3f}	# parameters: {params_num/1e6:0.3f}'
     print(evaluation_log)
     print(evaluation_log_attn)
+    print(averaged_forward_time)
     log.write(evaluation_log)
     log.write(evaluation_log_attn)
     log.close()
@@ -117,14 +119,7 @@ def get_res(labels, preds_str, preds_max_prob, opt, length_of_data, isattn = Fal
         #     print(isattn)
         #     print(pred)
         #     print(gt)
-        '''
-        (old version) ICDAR2017 DOST Normalized Edit Distance https://rrc.cvc.uab.es/?ch=7&com=tasks
-        "For each word we calculate the normalized edit distance to the length of the ground truth transcription."
-        if len(gt) == 0:
-            norm_ED += 1
-        else:
-            norm_ED += edit_distance(pred, gt) / len(gt)
-        '''
+
 
         # ICDAR2019 Normalized Edit Distance
         if len(gt) == 0 or len(pred) == 0:
@@ -168,9 +163,9 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
 
         start_time = time.time()
         # if 'CTC' in opt.Prediction:
-        # preds = model.module.inference(image, text_for_pred)
-        preds_ctc, preds_attn = model(image, text_for_loss_attn, is_train = False)
+        preds = model.module.inference(image, text_for_pred)
         forward_time = time.time() - start_time
+        preds_ctc, preds_attn = model(image, text_for_loss_attn, is_train = False)
         preds_attn = preds_attn[:, :text_for_loss_attn.shape[1] - 1, :]
         target = text_for_loss_attn[:, 1:]
         cost_attn = criterion_attn(preds_attn.contiguous().view(-1, preds_attn.shape[-1]), target.contiguous().view(-1))
@@ -186,30 +181,13 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
             cost_ctc = criterion_ctc(preds_ctc.log_softmax(2).permute(1, 0, 2), text_for_loss_ctc, preds_size, length_for_loss_ctc)
 
         # Select max probabilty (greedy decoding) then decode index to character
-        # if opt.baiduCTC:
-        #     _, preds_index = preds_ctc.max(2)
-        #     preds_index = preds_index.view(-1)
-        # else:
-            # _, preds_index = preds_ctc.max(2)
-        # preds_str = converter_ctc.decode(preds_index.data, preds_size.data)
-        ######## filter ignore_char, rebalance
-        preds_prob = F.softmax(preds_ctc, dim=2)
-        preds_prob = preds_prob.cpu().detach().numpy()
-        ignore_idx = 0
-        preds_prob[:,:,ignore_idx] = 0.
-        pred_norm = preds_prob.sum(axis=2)
-        preds_prob = preds_prob/np.expand_dims(pred_norm, axis=-1)
-        preds_prob = torch.from_numpy(preds_prob).float().to("cpu")
-
-        if not opt.beam_search :
-            # Select max probabilty (greedy decoding) then decode index to character
-            _, preds_index = preds_prob.max(2)
+        if opt.baiduCTC:
+            _, preds_index = preds_ctc.max(2)
             preds_index = preds_index.view(-1)
-            preds_str = converter_ctc.decode_greedy(preds_index.data, preds_size.data)
-        else :
-            k = preds_prob.cpu().detach().numpy()
-            preds_str = converter_ctc.decode_beamsearch(k, beamWidth=5)
-
+        else:
+            _, preds_index = preds_ctc.max(2)
+        preds_str = converter_ctc.decode(preds_index.data, preds_size.data)
+    
         # else:
         #     preds = model(image, text_for_pred, is_train=False)
         #     forward_time = time.time() - start_time
@@ -244,7 +222,7 @@ def validation_ctc_and_attn(model, criterion_ctc, criterion_attn, evaluation_loa
     print(n_correct)
     print(n_correct_attn)
     print(length_of_data)
-
+    # print(infer_time / float(length_of_data) )
     return valid_loss_avg_ctc.val(), accuracy, norm_ED, preds_str, confidence_score_list, labels, infer_time, length_of_data, valid_loss_avg_attn.val(), accuracy_attn, norm_ED_attn, preds_str_attn, confidence_score_list_attn
 
 
@@ -276,7 +254,10 @@ def validation(model, criterion, evaluation_loader, converter, opt):
         preds_size = torch.IntTensor([preds.size(1)] * batch_size)
         # permute 'preds' to use CTCloss format
         if opt.baiduCTC:
-            cost = criterion(preds.permute(1, 0, 2), text_for_loss, preds_size, length_for_loss) / batch_size
+            if opt.label_smooth :
+                cost = criterion(preds.permute(1, 0, 2), text_for_loss, preds_size, length_for_loss,batch_size) 
+            else :
+                cost = criterion(preds.permute(1, 0, 2), text_for_loss, preds_size, length_for_loss) / batch_size
         else:
             cost = criterion(preds.log_softmax(2).permute(1, 0, 2), text_for_loss, preds_size, length_for_loss)
 
@@ -327,14 +308,6 @@ def validation(model, criterion, evaluation_loader, converter, opt):
             if pred == gt:
                 n_correct += 1
 
-            '''
-            (old version) ICDAR2017 DOST Normalized Edit Distance https://rrc.cvc.uab.es/?ch=7&com=tasks
-            "For each word we calculate the normalized edit distance to the length of the ground truth transcription."
-            if len(gt) == 0:
-                norm_ED += 1
-            else:
-                norm_ED += edit_distance(pred, gt) / len(gt)
-            '''
 
             # ICDAR2019 Normalized Edit Distance
             if len(gt) == 0 or len(pred) == 0:
@@ -361,7 +334,10 @@ def validation(model, criterion, evaluation_loader, converter, opt):
 def test(opt):
     """ model configuration """
     # if 'CTC' in opt.Prediction:
-    converter_ctc = CTCLabelConverter(opt.character)
+    if opt.baiduCTC:
+        converter_ctc = CTCLabelConverterForBaiduWarpctc(opt.character)
+    else :
+        converter_ctc = CTCLabelConverter(opt.character)
 # else:
     converter_attn = AttnLabelConverter(opt.character)
     opt.num_class_ctc = len(converter_ctc.character)
@@ -377,7 +353,7 @@ def test(opt):
 
     # load model
     print('loading pretrained model from %s' % opt.saved_model)
-    model.load_state_dict(torch.load(opt.saved_model, map_location=device))
+    model.load_state_dict(torch.load(opt.saved_model, map_location=device), strict = False)
     opt.exp_name = '_'.join(opt.saved_model.split('/')[1:])
     # print(model)
 
@@ -418,7 +394,7 @@ def test(opt):
             log.write(eval_data_log)
             print(f'{accuracy_by_best_model:0.3f}')
             print(f'{acc_attn:0.3f}')
-            log.write(f'{accuracy_by_best_model:0.3f}\n')
+            log.write(f'{accuracy_by_best_model:0.3f}	')
             log.close()
 
 
@@ -452,7 +428,6 @@ if __name__ == '__main__':
                         help='the number of output channel of GCN')
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
     parser.add_argument('--guide_training', action='store_true', help='Whether to use guide_training (default not)')
-    parser.add_argument('--beam_search', action='store_true', help='Whether to use beam_search (default not)')
     opt = parser.parse_args()
 
     """ vocab / character number configuration """

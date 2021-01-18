@@ -44,7 +44,9 @@ class GraphConvolution(nn.modules.module.Module):
 
     def get_distance_matrix(self, len_sequence, scale_factor):
         tmp = torch.arange(float(len_sequence)).repeat(len_sequence, 1)
-        return (1 / (1 + torch.exp(torch.abs(tmp-torch.transpose(tmp, 0, 1))-scale_factor))).unsqueeze(0)
+        tmp = 1 / (1 + torch.exp(torch.abs(tmp-torch.transpose(tmp, 0, 1))-scale_factor))
+        tmp[tmp < 0.25]  = 0
+        return tmp.unsqueeze(0)
 
 
     # def normalize_pygcn(adjacency_maxtrix):
